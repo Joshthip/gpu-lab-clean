@@ -1,0 +1,7 @@
+name: gpu-lab
+description: Attaching GPU to VM Instance
+runtime: nodejs
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: typescript

@@ -1,0 +1,6 @@
+config:
+  gcp:project: theta-experiments
+  gcp:region: us-central1
+  gcp:zone: us-central1-b
+  gpu-lab-joshua:instanceName: joshua-instance-testing
+encryptionsalt: v1:zr3Ir/RXyl8=:v1:aCP1bxOJcm4XQ36R:RnTLVXNXH0+UBQtyHCGElTPAOHYONw==
