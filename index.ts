@@ -1,10 +1,11 @@
 import * as gcp from "@pulumi/gcp";
 
+/** Project/region/zone */
 const project = "theta-experiments";
 const region  = "us-central1";
 const zone    = "us-central1-b";
 
-// Existing network links
+/** Existing network links */
 const networkLink =
   "https://www.googleapis.com/compute/v1/projects/theta-experiments/global/networks/joshua-gpu-lab-vpc";
 const subnetworkLink =
@@ -21,13 +22,12 @@ const dailyStop = new gcp.compute.ResourcePolicy("joshua-instance-testing-daily-
   },
 });
 
-/** Existing GPU VM (kept) */
+/** === Existing GPU VM (kept) === */
 const vm = new gcp.compute.Instance("vm", {
   project,
   name: "joshua-instance-testing",
   zone,
 
-  // Boot disk (set deviceName to the instance name to avoid drift)
   bootDisk: {
     deviceName: "joshua-instance-testing",
     guestOsFeatures: [
@@ -89,16 +89,20 @@ const vm = new gcp.compute.Instance("vm", {
     ],
   },
 
-  // 1 × NVIDIA Tesla T4
   guestAccelerators: [{ type: "nvidia-tesla-t4", count: 1 }],
 
   allowStoppingForUpdate: true,
 
-  // Attach nightly stop policy
-  resourcePolicies: [dailyStop.id],
+  // ⚠️ Your SDK expects a single string here, not an array
+  resourcePolicies: dailyStop.id,
 }, {
-  protect: true,
-  // NOTE: intentionally NOT using deleteBeforeReplace to avoid surprise deletes
+  protect: true, // keep protection; avoid deleteBeforeReplace going forward
+});
+
+/** Lookup the latest Ubuntu 24.04 LTS image once (for the cheap VMs) */
+const ubuntu2404 = gcp.compute.getImageOutput({
+  family: "ubuntu-2404-lts",
+  project: "ubuntu-os-cloud",
 });
 
 /** Helper to create a minimal Ubuntu VM (2 vCPU / 2GB, no GPU) */
@@ -110,8 +114,8 @@ function makeCheapVm(name: string) {
     machineType: "e2-small", // 2 vCPU / 2GB RAM
     bootDisk: {
       initializeParams: {
-        imageFamily: "ubuntu-2404-lts",
-        imageProject: "ubuntu-os-cloud",
+        // Use the resolved selfLink from the image data source
+        image: ubuntu2404.selfLink,
         size: 10,
         type: "pd-balanced",
       },
@@ -132,11 +136,12 @@ function makeCheapVm(name: string) {
     },
     guestAccelerators: [], // no GPU
     scheduling: { provisioningModel: "STANDARD" },
-    resourcePolicies: [dailyStop.id],
+    // ⚠️ Single string again for this SDK
+    resourcePolicies: dailyStop.id,
     allowStoppingForUpdate: true,
   });
 }
 
-// Two additional cheap VMs on the same VPC/subnet
+/** Two additional cheap VMs on the same VPC/subnet */
 const vmA = makeCheapVm("lab-clean-vm-a");
 const vmB = makeCheapVm("lab-clean-vm-b");
