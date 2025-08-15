@@ -100,3 +100,41 @@ const vm = new gcp.compute.Instance("vm", {
   // Optional future hardening:
   // ignoreChanges: ["bootDisk[0].deviceName"],
 });
+
+// Helper to create minimal Ubuntu VM (2 vCPU / 2GB, no GPU)
+function makeCheapVm(name: string) {
+  return new gcp.compute.Instance(name, {
+    project: "theta-experiments",
+    name,
+    zone: "us-central1-b",
+    machineType: "e2-small",
+    bootDisk: {
+      initializeParams: {
+        image: "https://www.googleapis.com/compute/beta/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250805",
+        size: 10,
+        type: "pd-balanced",
+      },
+    },
+    metadata: {
+      "enable-oslogin": "true",
+      "enable-osconfig": "TRUE",
+    },
+    networkInterfaces: [{
+      network: "https://www.googleapis.com/compute/v1/projects/theta-experiments/global/networks/joshua-gpu-lab-vpc",
+      subnetwork: "https://www.googleapis.com/compute/v1/projects/theta-experiments/regions/us-central1/subnetworks/gpu-uscentral1-subnet",
+      subnetworkProject: "theta-experiments",
+      stackType: "IPV4_ONLY",
+      accessConfigs: [{}], // ephemeral external IP for SSH
+    }],
+    serviceAccount: { scopes: ["https://www.googleapis.com/auth/cloud-platform"] },
+    guestAccelerators: [], // no GPU
+    scheduling: { provisioningModel: "STANDARD" },
+    // Your provider expects a single string (not array)
+    resourcePolicies: dailyStop.id,
+    allowStoppingForUpdate: true,
+  });
+}
+
+// Two new VMs on same VPC/subnet
+const vmA = makeCheapVm("lab-clean-vm-a");
+const vmB = makeCheapVm("lab-clean-vm-b");
