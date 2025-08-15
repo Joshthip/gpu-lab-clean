@@ -1,17 +1,15 @@
 import * as gcp from "@pulumi/gcp";
 
-/** Project/region/zone */
 const project = "theta-experiments";
 const region  = "us-central1";
 const zone    = "us-central1-b";
 
-/** Existing network links */
 const networkLink =
   "https://www.googleapis.com/compute/v1/projects/theta-experiments/global/networks/joshua-gpu-lab-vpc";
 const subnetworkLink =
   "https://www.googleapis.com/compute/v1/projects/theta-experiments/regions/us-central1/subnetworks/gpu-uscentral1-subnet";
 
-/** Nightly stop policy — 8 PM America/Los_Angeles (regional) */
+/** Nightly stop policy — 8 PM PT */
 const dailyStop = new gcp.compute.ResourcePolicy("joshua-instance-testing-daily-stop", {
   name: "joshua-instance-testing-daily-stop",
   region,
@@ -22,7 +20,7 @@ const dailyStop = new gcp.compute.ResourcePolicy("joshua-instance-testing-daily-
   },
 });
 
-/** === Existing GPU VM (kept) === */
+/** Recreate the original GPU VM */
 const vm = new gcp.compute.Instance("vm", {
   project,
   name: "joshua-instance-testing",
@@ -93,55 +91,12 @@ const vm = new gcp.compute.Instance("vm", {
 
   allowStoppingForUpdate: true,
 
-  // ⚠️ Your SDK expects a single string here, not an array
+  // Your provider expects a single string here
   resourcePolicies: dailyStop.id,
 }, {
-  protect: true, // keep protection; avoid deleteBeforeReplace going forward
+  // TEMPORARILY omit protect so Pulumi can recreate it
+  // We'll re-enable protection after it's up.
+  // protect: true,
+  // Optional future hardening:
+  // ignoreChanges: ["bootDisk[0].deviceName"],
 });
-
-/** Lookup the latest Ubuntu 24.04 LTS image once (for the cheap VMs) */
-const ubuntu2404 = gcp.compute.getImageOutput({
-  family: "ubuntu-2404-lts",
-  project: "ubuntu-os-cloud",
-});
-
-/** Helper to create a minimal Ubuntu VM (2 vCPU / 2GB, no GPU) */
-function makeCheapVm(name: string) {
-  return new gcp.compute.Instance(name, {
-    project,
-    name,
-    zone,
-    machineType: "e2-small", // 2 vCPU / 2GB RAM
-    bootDisk: {
-      initializeParams: {
-        // Use the resolved selfLink from the image data source
-        image: ubuntu2404.selfLink,
-        size: 10,
-        type: "pd-balanced",
-      },
-    },
-    metadata: {
-      "enable-oslogin": "true",
-      "enable-osconfig": "TRUE",
-    },
-    networkInterfaces: [{
-      network: networkLink,
-      subnetwork: subnetworkLink,
-      subnetworkProject: project,
-      stackType: "IPV4_ONLY",
-      accessConfigs: [{}], // ephemeral external IP
-    }],
-    serviceAccount: {
-      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-    },
-    guestAccelerators: [], // no GPU
-    scheduling: { provisioningModel: "STANDARD" },
-    // ⚠️ Single string again for this SDK
-    resourcePolicies: dailyStop.id,
-    allowStoppingForUpdate: true,
-  });
-}
-
-/** Two additional cheap VMs on the same VPC/subnet */
-const vmA = makeCheapVm("lab-clean-vm-a");
-const vmB = makeCheapVm("lab-clean-vm-b");
