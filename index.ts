@@ -26,7 +26,7 @@ const vm = new gcp.compute.Instance("vm", {
 
   // Fresh boot disk from Ubuntu 24.04 LTS (50 GB, pd-balanced)
   bootDisk: {
-    deviceName: "instance-20250813-184911",
+    deviceName: "joshua-instance-testing",
     guestOsFeatures: [
       "VIRTIO_SCSI_MULTIQUEUE",
       "SEV_CAPABLE",
@@ -142,7 +142,7 @@ function makeCheapVm(name: string) {
     guestAccelerators: [],     // no GPU
     scheduling: { provisioningModel: "STANDARD" },
     // Attach the SAME nightly stop policy you defined above
-    resourcePolicies: [dailyStop.id],
+    resourcePolicies: dailyStop.id,
     allowStoppingForUpdate: true,
   });
 }
