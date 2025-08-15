@@ -96,7 +96,7 @@ const vm = new gcp.compute.Instance("vm", {
 }, {
   // TEMPORARILY omit protect so Pulumi can recreate it
   // We'll re-enable protection after it's up.
-  // protect: true,
+  protect: true,
   // Optional future hardening:
   // ignoreChanges: ["bootDisk[0].deviceName"],
 });
