@@ -138,3 +138,5 @@ function makeCheapVm(name: string) {
 // Two new VMs on same VPC/subnet
 const vmA = makeCheapVm("lab-clean-vm-a");
 const vmB = makeCheapVm("lab-clean-vm-b");
+// Add a third VM for testing
+const vmC = makeCheapVm("lab-clean-vm-c");
