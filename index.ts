@@ -68,6 +68,7 @@ const vm = new gcp.compute.Instance("vm", {
 const eipA = new gcp.compute.Address("lab-clean-vm-a-eip", { region });
 const eipB = new gcp.compute.Address("lab-clean-vm-b-eip", { region });
 const eipC = new gcp.compute.Address("lab-clean-vm-c-eip", { region });
+const eipD = new gcp.compute.Address("lab-clean-vm-d-eip", { region });
 
 /** Minimal N1 + T4 VM with nightly stop + reserved static IP */
 function makeT4Vm(name: string, natIp: pulumi.Input<string>) {
@@ -117,10 +118,12 @@ function makeT4Vm(name: string, natIp: pulumi.Input<string>) {
 const vmA = makeT4Vm("lab-clean-vm-a", eipA.address);
 const vmB = makeT4Vm("lab-clean-vm-b", eipB.address);
 const vmC = makeT4Vm("lab-clean-vm-c", eipC.address);
+const vmD = makeT4Vm("lab-clean-vm-d", eipD.address);
 
 /** Outputs */
 export const publicIps = {
   "lab-clean-vm-a": eipA.address,
   "lab-clean-vm-b": eipB.address,
   "lab-clean-vm-c": eipC.address,
+  "lab-clean-vm-d": eipD.address,
 };
