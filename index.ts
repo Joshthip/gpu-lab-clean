@@ -10,7 +10,7 @@ const networkLink =
 const subnetworkLink =
   "https://www.googleapis.com/compute/v1/projects/theta-experiments/regions/us-central1/subnetworks/gpu-uscentral1-subnet";
 
-/** Nightly stop policy — unchanged */
+/** Nightly stop policy — 8 PM PT (unchanged) */
 const dailyStop = new gcp.compute.ResourcePolicy("joshua-instance-testing-daily-stop", {
   name: "joshua-instance-testing-daily-stop",
   region,
@@ -18,9 +18,11 @@ const dailyStop = new gcp.compute.ResourcePolicy("joshua-instance-testing-daily-
   instanceSchedulePolicy: { vmStopSchedule: { schedule: "0 20 * * *" }, timeZone: "America/Los_Angeles" },
 });
 
-/** GPU VM — unchanged */
+/** GPU VM (UNCHANGED & protected) */
 const vm = new gcp.compute.Instance("vm", {
-  project, name: "joshua-instance-testing", zone,
+  project,
+  name: "joshua-instance-testing",
+  zone,
   bootDisk: {
     deviceName: "joshua-instance-testing",
     guestOsFeatures: [
@@ -29,15 +31,16 @@ const vm = new gcp.compute.Instance("vm", {
     ],
     initializeParams: {
       architecture: "X86_64",
-      image: "https://www.googleapis.com/compute/beta/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250805",
-      size: 50, type: "pd-balanced",
+      image: "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250805",
+      size: 50,
+      type: "pd-balanced",
     },
   },
   keyRevocationActionType: "NONE",
   machineType: "custom-2-4096",
   metadata: { "enable-osconfig": "TRUE", "enable-oslogin": "true" },
   networkInterfaces: [{
-    accessConfigs: [{ networkTier: "PREMIUM" }], // leave as ephemeral
+    accessConfigs: [{ networkTier: "PREMIUM" }], // keep ephemeral on this VM
     network: networkLink,
     stackType: "IPV4_ONLY",
     subnetwork: subnetworkLink,
@@ -61,58 +64,59 @@ const vm = new gcp.compute.Instance("vm", {
   resourcePolicies: dailyStop.id,
 }, { protect: true });
 
-/** Reserve static public IPs for the three existing small VMs */
+/** Reuse the reserved static public IPs */
 const eipA = new gcp.compute.Address("lab-clean-vm-a-eip", { region });
 const eipB = new gcp.compute.Address("lab-clean-vm-b-eip", { region });
 const eipC = new gcp.compute.Address("lab-clean-vm-c-eip", { region });
 
-/** We’ll adopt the existing instances and only manage natIp on nic0. */
-const ignore = [
-  "bootDisk","machineType","metadata","tags","serviceAccount","scheduling",
-  "guestAccelerators","reservationAffinity","shieldedInstanceConfig","resourcePolicies",
-  "canIpForward","minCpuPlatform","deletionProtection","description","labels",
-  "networkInterfaces[0].network","networkInterfaces[0].subnetwork","networkInterfaces[0].subnetworkProject",
-  "networkInterfaces[0].stackType","networkInterfaces[0].networkIp","networkInterfaces[0].aliasIpRanges",
-  "networkInterfaces[0].ipv6AccessConfigs",
-];
+/** Minimal N1 + T4 VM with nightly stop + reserved static IP */
+function makeT4Vm(name: string, natIp: pulumi.Input<string>) {
+  return new gcp.compute.Instance(name, {
+    // lock the GCE name (no Pulumi suffix)
+    name,
 
-/** vm-a (adopt + set reserved natIp) */
-const vmA = new gcp.compute.Instance("lab-clean-vm-a", {
-  zone,
-  // minimal placeholders to satisfy typing; ignored via ignoreChanges:
-  machineType: "e2-small",
-  bootDisk: { initializeParams: { image: "ubuntu-os-cloud/ubuntu-2404-lts" } },
-  // the one field we actually want to control:
-  networkInterfaces: [{ accessConfigs: [{ natIp: eipA.address }] }],
-  allowStoppingForUpdate: true,
-}, {
-  import: `projects/${project}/zones/${zone}/instances/lab-clean-vm-a`,
-  ignoreChanges: ignore,
-});
+    project,
+    zone,
+    machineType: "custom-2-4096", // N1 custom: 2 vCPU, 4 GB (low cost)
+    bootDisk: {
+      deviceName: name,
+      initializeParams: {
+        // known-good Ubuntu 24.04 image selfLink
+        image: "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250805",
+        size: 20,
+        type: "pd-balanced",
+      },
+    },
+    metadata: {
+      "enable-oslogin": "true",
+      "enable-osconfig": "TRUE",
+      // "install-nvidia-driver": "true", // uncomment if you want auto driver install
+    },
+    tags: ["wg-udp-51820"],
+    networkInterfaces: [{
+      network: networkLink,
+      subnetwork: subnetworkLink,
+      subnetworkProject: project,
+      stackType: "IPV4_ONLY",
+      accessConfigs: [{ natIp, networkTier: "PREMIUM" }], // reuse reserved static IP
+    }],
+    guestAccelerators: [{ type: "nvidia-tesla-t4", count: 1 }],
+    scheduling: {
+      onHostMaintenance: "TERMINATE", // required for GPU VMs
+      provisioningModel: "STANDARD",
+    },
+    resourcePolicies: dailyStop.id,   // nightly stop @ 8 PM PT
+    allowStoppingForUpdate: true,
+    serviceAccount: { scopes: ["https://www.googleapis.com/auth/cloud-platform"] },
+  }, {
+    deleteBeforeReplace: true, // frees the static IP before re-creating
+  });
+}
 
-/** vm-b */
-const vmB = new gcp.compute.Instance("lab-clean-vm-b", {
-  zone,
-  machineType: "e2-small",
-  bootDisk: { initializeParams: { image: "ubuntu-os-cloud/ubuntu-2404-lts" } },
-  networkInterfaces: [{ accessConfigs: [{ natIp: eipB.address }] }],
-  allowStoppingForUpdate: true,
-}, {
-  import: `projects/${project}/zones/${zone}/instances/lab-clean-vm-b`,
-  ignoreChanges: ignore,
-});
-
-/** vm-c */
-const vmC = new gcp.compute.Instance("lab-clean-vm-c", {
-  zone,
-  machineType: "e2-small",
-  bootDisk: { initializeParams: { image: "ubuntu-os-cloud/ubuntu-2404-lts" } },
-  networkInterfaces: [{ accessConfigs: [{ natIp: eipC.address }] }],
-  allowStoppingForUpdate: true,
-}, {
-  import: `projects/${project}/zones/${zone}/instances/lab-clean-vm-c`,
-  ignoreChanges: ignore,
-});
+// Rebuild with exact names (no suffixes)
+const vmA = makeT4Vm("lab-clean-vm-a", eipA.address);
+const vmB = makeT4Vm("lab-clean-vm-b", eipB.address);
+const vmC = makeT4Vm("lab-clean-vm-c", eipC.address);
 
 /** Outputs */
 export const publicIps = {
