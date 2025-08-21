@@ -1,63 +1,68 @@
 #!/usr/bin/env bash
-# Builds LOCAL-NETWORK-INPUT from Kubernetes node InternalIPs.
-# Only applies changes if different; safe for cron.
+# Allow only InternalIPs of nodes sharing our Kilo location.
 set -euo pipefail
 PATH=/usr/sbin:/sbin:/usr/bin:/bin
 
 CHAIN="LOCAL-NETWORK-INPUT"
-SUBNET="10.30.0.0/20"                 # <-- change if your private CIDR changes
-KCFG="/etc/kubernetes/kubelet.conf"   # kubelet kubeconfig
+SUBNET="10.30.0.0/20"
+KCFG="/etc/kubernetes/kubelet.conf"
 
-# Desired (all node InternalIPs, IPv4)
-mapfile -t DESIRED < <(kubectl --kubeconfig "$KCFG" get nodes \
-  -o jsonpath='{range .items[*]}{range .status.addresses[*]}{.type}={" "}{.address}{"\n"}{end}{end}' \
-  | awk '$1=="InternalIP="{print $2}' \
-  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-  | sort -u)
-[[ ${#DESIRED[@]} -gt 0 ]] || exit 0
+IPT="$(command -v iptables-nft || command -v iptables)"
+IPTSAVE="$(command -v iptables-nft-save || command -v iptables-save)"
+[[ -n "${IPT:-}" && -n "${IPTSAVE:-}" ]] || { echo "FATAL: iptables not found"; exit 1; }
+"$IPT" -L -n >/dev/null 2>&1 || { echo "FATAL: $IPT incompatible with this kernel"; exit 1; }
 
-# Current (sources already allowed in our chain)
-mapfile -t CURRENT < <(iptables-save -t filter 2>/dev/null \
+# --- Resolve local node name by InternalIP ---
+SELF_IP="$(hostname -I | awk '{print $1}')"
+NODENAME="$(kubectl --kubeconfig "$KCFG" get nodes -o json \
+  | jq -r --arg ip "$SELF_IP" '
+      .items[] | select(any(.status.addresses[]?; .type=="InternalIP" and .address==$ip)) | .metadata.name
+    ' | head -n1)"
+[[ -n "$NODENAME" ]] || { echo "FATAL: could not resolve local node name"; exit 1; }
+
+# --- Kilo location (use jq to avoid jsonpath escaping issues) ---
+LOC="$(kubectl --kubeconfig "$KCFG" get node "$NODENAME" -o json \
+  | jq -r '.metadata.annotations["kilo.squat.ai/location"] // empty')"
+[[ -n "$LOC" ]] || { echo "FATAL: no kilo.squat.ai/location on $NODENAME"; exit 1; }
+
+# --- Desired InternalIPs: nodes with same Kilo location ---
+mapfile -t DESIRED < <(kubectl --kubeconfig "$KCFG" get nodes -o json \
+  | jq -r --arg loc "$LOC" '
+      .items[]
+      | select(.metadata.annotations["kilo.squat.ai/location"]==$loc)
+      | .status.addresses[] | select(.type=="InternalIP") | .address
+    ' | sort -u)
+[[ ${#DESIRED[@]} -gt 0 ]] || { echo "No peers found for location=$LOC; exiting"; exit 0; }
+
+# --- Current allowlisted sources in our chain ---
+mapfile -t CURRENT < <("$IPTSAVE" -t filter 2>/dev/null \
   | awk -v c="$CHAIN" '$1=="-A" && $2==c && / -j ACCEPT/ {for(i=1;i<=NF;i++) if($i=="-s"){gsub("/32","",$(i+1)); print $(i+1)}}' \
   | sort -u)
 
-# Is our jump the FIRST rule in INPUT?
-FIRST_INPUT_RULE="$(iptables -S INPUT 2>/dev/null | awk '/^-A INPUT /{print; exit}')"
-JUMP_FIRST=false; [[ "$FIRST_INPUT_RULE" == *"-j $CHAIN"* ]] && JUMP_FIRST=true
+FIRST_INPUT_RULE="$("$IPT" -S INPUT 2>/dev/null | awk '/^-A INPUT /{print; exit}')"
+JUMP_FIRST=false; [[ "${FIRST_INPUT_RULE:-}" == *"-j $CHAIN"* ]] && JUMP_FIRST=true
+DROP_PRESENT=false; "$IPTSAVE" -t filter | grep -q -- "^-A $CHAIN -s $SUBNET -j DROP$" && DROP_PRESENT=true
 
-# Does chain contain the SUBNET drop?
-DROP_PRESENT=false; iptables-save -t filter | grep -q -- "^-A $CHAIN -s $SUBNET -j DROP$" && DROP_PRESENT=true
-
-# Compare sets
 DESIRED_STR=$(printf '%s\n' "${DESIRED[@]}")
 CURRENT_STR=$(printf '%s\n' "${CURRENT[@]}")
-
-# No change? exit quietly
 if [[ "$DESIRED_STR" == "$CURRENT_STR" && "$JUMP_FIRST" == true && "$DROP_PRESENT" == true ]]; then
   exit 0
 fi
 
-# ---- Rebuild (delete rules, delete chain, then add again) ----
-# Remove any existing jumps (so we can re-insert at position 1)
-while iptables -C INPUT -j "$CHAIN" 2>/dev/null; do iptables -D INPUT -j "$CHAIN"; done
+# --- Rebuild chain cleanly ---
+while "$IPT" -C INPUT -j "$CHAIN" 2>/dev/null; do "$IPT" -D INPUT -j "$CHAIN"; done
+"$IPT" -F "$CHAIN" 2>/dev/null || true
+"$IPT" -X "$CHAIN" 2>/dev/null || true
 
-# Delete the chain if it exists
-iptables -F "$CHAIN" 2>/dev/null || true
-iptables -X "$CHAIN" 2>/dev/null || true
+"$IPT" -N "$CHAIN"
+"$IPT" -I INPUT 1 -j "$CHAIN"
 
-# Create fresh chain and jump to it at the very top of INPUT
-iptables -N "$CHAIN"
-iptables -I INPUT 1 -j "$CHAIN"
+"$IPT" -A "$CHAIN" -i lo -j ACCEPT
+"$IPT" -A "$CHAIN" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# Baseline + self
-iptables -A "$CHAIN" -i lo -j ACCEPT
-iptables -A "$CHAIN" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-SELF_IP="$(hostname -I | awk '{print $1}')"
-iptables -A "$CHAIN" -s "$SELF_IP/32" -d "$SELF_IP/32" -j ACCEPT
+for ip in "${DESIRED[@]}"; do "$IPT" -A "$CHAIN" -s "$ip/32" -j ACCEPT; done
 
-# Allow node IPs
-for ip in "${DESIRED[@]}"; do iptables -A "$CHAIN" -s "$ip/32" -j ACCEPT; done
+"$IPT" -A "$CHAIN" -s "$SUBNET" -j DROP
+"$IPT" -A "$CHAIN" -j RETURN
 
-# Drop remainder of private CIDR; let non-CIDR traffic fall through
-iptables -A "$CHAIN" -s "$SUBNET" -j DROP
-iptables -A "$CHAIN" -j RETURN
+echo "Applied $CHAIN; location=$LOC; allowed: ${DESIRED[*]}"
